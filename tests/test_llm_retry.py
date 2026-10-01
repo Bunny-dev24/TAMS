@@ -91,6 +91,28 @@ def test_chat_json_degrades_to_empty_dict_after_exhausting_retries(settings):
     assert stub.calls == 3
 
 
+def test_llm_client_passes_custom_base_url_to_openai_sdk(settings, monkeypatch):
+    """Verifies the Abacus-AI-or-any-OpenAI-compatible-provider wiring: when
+    llm_base_url is set, it must reach the OpenAI SDK constructor so chat/
+    embeddings calls route to that provider instead of api.openai.com."""
+    captured = {}
+
+    class _FakeOpenAICtor:
+        def __init__(self, api_key=None, base_url=None):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+
+    monkeypatch.setattr("openai.OpenAI", _FakeOpenAICtor)
+
+    custom_settings = settings.model_copy(
+        update={"openai_api_key": "abacus-test-key", "llm_base_url": "https://routellm.abacus.ai/v1"}
+    )
+    LLMClient(custom_settings)
+
+    assert captured["api_key"] == "abacus-test-key"
+    assert captured["base_url"] == "https://routellm.abacus.ai/v1"
+
+
 def test_embed_retries_then_succeeds(settings):
     payload = SimpleNamespace(
         data=[SimpleNamespace(embedding=[0.1, 0.2]), SimpleNamespace(embedding=[0.3, 0.4])],

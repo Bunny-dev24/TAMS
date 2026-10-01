@@ -36,7 +36,12 @@ class LLMClient:
         else:
             from openai import OpenAI  # imported lazily so fake mode has no hard dep
 
-            self._openai = OpenAI(api_key=settings.openai_api_key)
+            # base_url unset -> real OpenAI endpoint. Set it to point at any
+            # OpenAI-SDK-compatible gateway instead (Abacus AI, OpenRouter,
+            # Together, Groq, Azure OpenAI, local vLLM, ...) — model names
+            # in config (orchestrator_model/extractor_model/...) then just
+            # need to match whatever that provider calls its models.
+            self._openai = OpenAI(api_key=settings.openai_api_key, base_url=settings.llm_base_url or None)
             self._backend = None
 
     # ---------------------------------------------------------------- chat
