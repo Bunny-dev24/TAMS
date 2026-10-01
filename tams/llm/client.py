@@ -41,6 +41,24 @@ class LLMClient:
 
     # ---------------------------------------------------------------- chat
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+    def _call_openai_chat(
+        self,
+        messages: list[dict[str, str]],
+        model: str,
+        temperature: float,
+        max_tokens: int | None,
+    ):
+        resp = self._openai.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        text = resp.choices[0].message.content or ""
+        pt = resp.usage.prompt_tokens if resp.usage else 0
+        ct = resp.usage.completion_tokens if resp.usage else 0
+        return text, pt, ct
+
     def chat(
         self,
         messages: list[dict[str, str]],
@@ -55,21 +73,47 @@ class LLMClient:
             r = self._backend.chat(messages, model, temperature, max_tokens, fake_fn=fake_fn)
             text, pt, ct = r.text, r.prompt_tokens, r.completion_tokens
         else:
-            resp = self._openai.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-            )
-            text = resp.choices[0].message.content or ""
-            pt = resp.usage.prompt_tokens if resp.usage else 0
-            ct = resp.usage.completion_tokens if resp.usage else 0
+            try:
+                text, pt, ct = self._call_openai_chat(messages, model, temperature, max_tokens)
+            except Exception:
+                # Graceful degradation guardrail: the user-facing hot path
+                # must never crash, even if the LLM API is fully down after
+                # 3 retries. Surface a clear, honest fallback instead.
+                text, pt, ct = (
+                    "I'm having trouble reaching the language model right now. "
+                    "Please try again in a moment.",
+                    0,
+                    0,
+                )
         latency = time.monotonic() - t0
         if self.cost_sink:
             self.cost_sink(purpose, model, pt, ct, latency)
         return ChatResult(text=text, prompt_tokens=pt, completion_tokens=ct, latency_s=latency)
 
     # ----------------------------------------------------------- chat_json
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+    def _call_openai_chat_json(self, messages: list[dict[str, str]], model: str, schema: dict[str, Any]):
+        sys_hint = {
+            "role": "system",
+            "content": "Respond with STRICT JSON only, matching this schema: " + json.dumps(schema),
+        }
+        resp = self._openai.chat.completions.create(
+            model=model,
+            messages=[sys_hint] + messages,
+            temperature=0.0,
+            response_format={"type": "json_object"},
+        )
+        raw = resp.choices[0].message.content or "{}"
+        try:
+            result = json.loads(raw)
+        except json.JSONDecodeError as e:
+            # Retry: malformed JSON is often a one-off model hiccup — a fresh
+            # call frequently succeeds where re-parsing the same text can't.
+            raise RuntimeError(f"model returned invalid JSON: {raw[:200]!r}") from e
+        pt = resp.usage.prompt_tokens if resp.usage else 0
+        ct = resp.usage.completion_tokens if resp.usage else 0
+        return result, pt, ct
+
     def chat_json(
         self,
         messages: list[dict[str, str]],
@@ -84,32 +128,26 @@ class LLMClient:
                 raise ValueError("fake_fn is required in fake mode for chat_json")
             result, pt, ct = self._backend.chat_json(messages, model, schema, fake_fn)
         else:
-            sys_hint = {
-                "role": "system",
-                "content": (
-                    "Respond with STRICT JSON only, matching this schema: "
-                    + json.dumps(schema)
-                ),
-            }
-            resp = self._openai.chat.completions.create(
-                model=model,
-                messages=[sys_hint] + messages,
-                temperature=0.0,
-                response_format={"type": "json_object"},
-            )
-            raw = resp.choices[0].message.content or "{}"
             try:
-                result = json.loads(raw)
-            except json.JSONDecodeError:
-                result = {}
-            pt = resp.usage.prompt_tokens if resp.usage else 0
-            ct = resp.usage.completion_tokens if resp.usage else 0
+                result, pt, ct = self._call_openai_chat_json(messages, model, schema)
+            except Exception:
+                # All retries exhausted — degrade to an empty result rather
+                # than propagating (callers/extractors treat {} as "nothing
+                # extracted this turn", never a crash).
+                result, pt, ct = {}, 0, 0
         latency = time.monotonic() - t0
         if self.cost_sink:
             self.cost_sink(purpose, model, pt, ct, latency)
         return result
 
     # ---------------------------------------------------------------- embed
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=0.5, max=8))
+    def _call_openai_embed(self, texts: list[str], model: str):
+        resp = self._openai.embeddings.create(model=model, input=texts)
+        vectors = [d.embedding for d in resp.data]
+        pt = resp.usage.prompt_tokens if resp.usage else 0
+        return vectors, pt
+
     def embed(self, texts: list[str], purpose: str = "embed") -> list[list[float]]:
         if not texts:
             return []
@@ -118,9 +156,7 @@ class LLMClient:
             vectors = self._backend.embed(texts, self.settings.embedding_model, self.settings.embedding_dim)
             pt = sum(len(t.split()) for t in texts)
         else:
-            resp = self._openai.embeddings.create(model=self.settings.embedding_model, input=texts)
-            vectors = [d.embedding for d in resp.data]
-            pt = resp.usage.prompt_tokens if resp.usage else 0
+            vectors, pt = self._call_openai_embed(texts, self.settings.embedding_model)
         latency = time.monotonic() - t0
         if self.cost_sink:
             self.cost_sink(purpose, self.settings.embedding_model, pt, 0, latency)

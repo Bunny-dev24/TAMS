@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: "pip"
+
+      - name: Install TAMS (editable, with dev deps)
+        run: pip install -e ".[dev]"
+
+      - name: Byte-compile sanity check
+        run: python -m py_compile $(find tams -name "*.py")
+
+      - name: Run tests
+        # No OPENAI_API_KEY secret is configured here on purpose — the full
+        # suite runs deterministically in fake-LLM mode (zero network, zero
+        # cost), which is exactly what CI should exercise on every push.
+        run: pytest -q
+
+  lint-imports:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package only (no dev deps) to catch missing runtime deps
+        run: pip install -e .
+      - name: Import the package and build a session end-to-end (no network)
+        run: |
+          python -c "
+          from tams.config import Settings
+          from tams.storage.db import init_db_memory
+          from tams.session import build_session, reset_shared_state
+          from tams.agents.orchestrator import OrchestratorAgent
+
+          init_db_memory()
+          reset_shared_state()
+          s = Settings(openai_api_key=None)
+          session = build_session('ci-smoke', s)
+          orch = OrchestratorAgent(session, async_memory=False)
+          r = orch.handle_turn('The max_retries is set to 5.')
+          assert r.turn_id == 1
+          print('CI smoke test OK:', r.response_text)
+          "
