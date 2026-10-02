@@ -40,10 +40,11 @@ def _ingest_haystack(
             # summary), just skip the 5 dedicated extractors — this is the
             # "without dedicated extractors" ablation.
             if session.working_memory.needs_compaction(session.session_id):
-                evicted = session.working_memory.evict_for_compaction(session.session_id)
-                if evicted:
-                    chunks = session.chunk_store.ingest_evicted_turns(session.session_id, evicted)
+                pending = session.working_memory.plan_eviction(session.session_id)
+                if pending:
+                    chunks = session.chunk_store.ingest_evicted_turns(session.session_id, pending)
                     session.chunk_store.extend_summary(session.session_id, chunks, user_id=session.user_id)
+                    session.working_memory.commit_eviction(session.session_id, len(pending))
     return raw_tokens
 
 

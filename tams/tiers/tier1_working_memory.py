@@ -37,19 +37,39 @@ class WorkingMemory:
             return True
         return self.current_tokens(session_id) >= self.budget_tokens()
 
-    def evict_for_compaction(self, session_id: str, target_fraction: float = 0.5) -> list[Turn]:
-        """Evict oldest turns until usage drops to target_fraction of budget
-        (or the turn-count cap). Returns evicted turns (handed to Tier 2)."""
+    def plan_eviction(self, session_id: str, target_fraction: float = 0.5) -> list[Turn]:
+        """Non-destructively determine which oldest turns SHOULD be evicted
+        to bring Tier 1 back under budget — nothing is removed from storage
+        here. Callers MUST call commit_eviction() with the same count, and
+        ONLY after those turns have been durably persisted into Tier 2 — this
+        is what prevents a failed Tier-2 write (e.g. an embedding-API error)
+        from silently losing raw turns that were already popped out of Tier 1.
+        """
         target_tokens = int(self.budget_tokens() * target_fraction)
-        evicted: list[Turn] = []
-        turns = self.store.get_all(session_id)
-        while turns and (
-            self.current_tokens(session_id) > target_tokens
-            or len(self.store.get_all(session_id)) > self.settings.working_memory_max_turns
-        ):
-            batch = self.store.pop_oldest(session_id, self.settings.chunk_size_turns)
-            if not batch:
-                break
-            evicted.extend(batch)
-            turns = self.store.get_all(session_id)
-        return evicted
+        all_turns = self.store.get_all(session_id)
+        n = len(all_turns)
+        running_tokens = sum(self._count_tokens(t.content) for t in all_turns)
+        i = 0
+        while i < n and (running_tokens > target_tokens or (n - i) > self.settings.working_memory_max_turns):
+            running_tokens -= self._count_tokens(all_turns[i].content)
+            i += 1
+        # Round up to a whole number of Tier-2 chunk groups for clean boundaries.
+        chunk_size = max(self.settings.chunk_size_turns, 1)
+        i = min(((i + chunk_size - 1) // chunk_size) * chunk_size, n)
+        return all_turns[:i]
+
+    def commit_eviction(self, session_id: str, count: int) -> None:
+        """Actually remove the first `count` turns from Tier 1. Call this
+        ONLY after the same turns have been safely written to Tier 2."""
+        if count > 0:
+            self.store.pop_oldest(session_id, count)
+
+    def evict_for_compaction(self, session_id: str, target_fraction: float = 0.5) -> list[Turn]:
+        """Convenience wrapper that plans AND immediately commits eviction
+        (not failure-safe — if the caller's subsequent Tier-2 write fails,
+        these turns are already gone). Prefer plan_eviction()/
+        commit_eviction() directly whenever the evicted turns still need to
+        be persisted into Tier 2 before being safely removed from Tier 1."""
+        planned = self.plan_eviction(session_id, target_fraction)
+        self.commit_eviction(session_id, len(planned))
+        return planned

@@ -47,13 +47,25 @@ class MemoryManager:
             self.session.turns_since_last_preference_run = 0
 
         if self.session.working_memory.needs_compaction(self.session.session_id):
-            evicted = self.session.working_memory.evict_for_compaction(self.session.session_id)
-            if evicted:
-                chunks = self.session.chunk_store.ingest_evicted_turns(self.session.session_id, evicted)
-                self.session.chunk_store.extend_summary(self.session.session_id, chunks, user_id=self.session.user_id)
-                report["compacted"] = True
-                report["evicted_turns"] = len(evicted)
-                report["chunks_created"] = len(chunks)
+            # Peek (non-destructive) first — only remove these turns from
+            # Tier 1 AFTER they're durably in Tier 2. If ingest_evicted_turns
+            # fails for any reason (e.g. an embedding-API hiccup), Tier 1 is
+            # left untouched and compaction simply retries on a later turn,
+            # instead of silently losing raw turns forever.
+            pending = self.session.working_memory.plan_eviction(self.session.session_id)
+            if pending:
+                try:
+                    chunks = self.session.chunk_store.ingest_evicted_turns(self.session.session_id, pending)
+                    self.session.chunk_store.extend_summary(
+                        self.session.session_id, chunks, user_id=self.session.user_id
+                    )
+                except Exception as e:
+                    report["compaction_error"] = str(e)
+                else:
+                    self.session.working_memory.commit_eviction(self.session.session_id, len(pending))
+                    report["compacted"] = True
+                    report["evicted_turns"] = len(pending)
+                    report["chunks_created"] = len(chunks)
 
         return report
 

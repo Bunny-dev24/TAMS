@@ -44,6 +44,14 @@ class WorkingMemoryStore(ABC):
         """Evict and return the n oldest turns (for Tier-2 handoff)."""
 
     @abstractmethod
+    def peek_oldest(self, session_id: str, n: int) -> list[Turn]:
+        """Non-destructive read of the n oldest turns. Used to safely stage
+        Tier 1 -> Tier 2 compaction: callers must only call pop_oldest()
+        AFTER the peeked turns have been durably persisted into Tier 2 — this
+        is what prevents raw turns from being silently lost if the Tier 2
+        write (which involves an embedding call) fails partway through."""
+
+    @abstractmethod
     def healthy(self) -> bool: ...
 
 
@@ -66,6 +74,10 @@ class InMemoryWorkingMemoryStore(WorkingMemoryStore):
             evicted, remainder = turns[:n], turns[n:]
             self._data[session_id] = remainder
             return evicted
+
+    def peek_oldest(self, session_id: str, n: int) -> list[Turn]:
+        with self._lock:
+            return list(self._data.get(session_id, [])[:n])
 
     def healthy(self) -> bool:
         return True
@@ -96,6 +108,10 @@ class RedisWorkingMemoryStore(WorkingMemoryStore):
                 break
             evicted.append(Turn.from_dict(json.loads(raw)))
         return evicted
+
+    def peek_oldest(self, session_id: str, n: int) -> list[Turn]:
+        raw = self._r.lrange(self._key(session_id), 0, max(n - 1, 0))
+        return [Turn.from_dict(json.loads(x)) for x in raw]
 
     def healthy(self) -> bool:
         try:
