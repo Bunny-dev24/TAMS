@@ -7,8 +7,10 @@ by a hybrid (cosine + BM25 + LLM rerank) retrieval pipeline and a 3-agent
 system (Orchestrator / Memory Manager / Verifier).
 
 See [`tams/`](tams) for the implementation. This README covers setup,
-architecture-to-code mapping, running the eval harness, and known
-limitations.
+architecture-to-code mapping, **why the retrieval pipeline is shaped the
+way it is** (the part most memory systems get wrong or skip explaining),
+running the eval harness, and known limitations — including the ones that
+are still open, stated plainly rather than hand-waved.
 
 ## Quickstart
 
@@ -52,6 +54,79 @@ python -m tams.cli eval --num-filler-turns 100 --ablation none
 | HITL correction | [`tams/governance/hitl.py`](tams/governance/hitl.py), `tams correct` |
 | Eval harness | [`tams/eval/`](tams/eval) (synthetic needle-in-haystack, metrics, baselines) |
 
+## Why the retrieval funnel is shaped the way it is
+
+This is the part of the system where almost all of the accuracy comes from,
+so it's worth justifying each stage on its own terms instead of just
+listing them. The funnel, concretely
+([`tams/retrieval/hybrid.py`](tams/retrieval/hybrid.py)):
+
+```
+Tier 1 (full, raw, synchronous)         — always included, zero filtering
+        +
+Tier 3 entity-match hard facts          — deterministic, always included
+        +
+┌─────────────────────────────────────────────────────────────┐
+│ cosine search (Tier2+3, up to pool_n)                        │
+│         +   fused, decay-weighted            →  pool (≤2000) │
+│ BM25 keyword search (same corpus)                             │
+└─────────────────────────────────────────────────────────────┘
+        │
+        ▼
+ONE listwise LLM rerank call over the pool  →  final top-k
+```
+
+**Why cosine *and* BM25, fused, instead of just one?** They fail in opposite,
+non-overlapping ways. Cosine similarity (embeddings) is good at paraphrase —
+"the DB we picked" matches "we chose PostgreSQL" — but it's notoriously bad
+at exact tokens: numbers, IDs, parameter names, and anything compressed away
+by the embedding model (a timeout of `30` vs `45` can end up with a *higher*
+cosine score to each other than either has to the literal query, because the
+embedding space doesn't preserve numeric distance as semantic distance).
+BM25 is the inverse: it's exact-token-perfect for "find the chunk containing
+`max_retries`" but has zero paraphrase ability. TAMS fuses both
+(`score = cos_score + 0.1 * bm25_score`) so a candidate only needs to win on
+*either* axis to make the pool — this is why hybrid retrieval is now
+standard practice in production RAG systems, not a TAMS-specific flourish.
+
+**Why is the LLM call reserved for a small, already-filtered pool, and not
+run per-candidate or over the raw corpus?** Two hard constraints collide
+here: (1) LLM calls are the most expensive and slowest primitive in the
+whole system per unit of work, so they must be *amortized* — one call doing
+listwise comparison over N candidates, not N calls doing pointwise
+classification; (2) an LLM asked to find a needle in an *undifferentiated*
+haystack of thousands of unrelated turns does measurably worse than one
+asked to rank an already-plausible shortlist — the cheap, parallelizable
+cosine+BM25 stage exists specifically to produce that shortlist so the one
+expensive call is spent on discrimination, not search. This is also why a
+cross-encoder (e.g. bge-reranker) was considered and *rejected* for this
+slot during design: cross-encoders score pointwise and context-free, with no
+instruction-following and a training distribution (web passages) that
+doesn't match terse structured fact text — the LLM reranker's listwise,
+instruction-following, query-aware scoring is the actual reason reranking
+helps here, and a cross-encoder would trade that away for latency it
+doesn't currently need at this project's scale.
+
+**Why does the LLM reranker get the final say over cosine/BM25 scores, but
+Tier-1 and entity-matched facts bypass it entirely?** Any multi-stage
+filter can only ever *maintain or reduce* recall relative to the stage
+before it, never increase it — if the true answer isn't in the pool, no
+reranker rescues it. Two things are deliberately exempted from that risk:
+Tier 1 (the raw, current conversation) is never filtered at all, so the
+model can never "forget" something from the last N turns regardless of how
+retrieval performs; and Tier-3 facts whose entities literally match the
+query's are included via deterministic lookup (`entity_match.py`),
+bypassing similarity/rerank scoring entirely, so a hard numeric/decision
+fact can never be mis-ranked out of context by an imperfect fusion score.
+
+**Where this funnel is honestly *not* bulletproof:** the cosine+BM25 pool
+is still a hard cutoff at `retrieval_pool_size` (default 2000) — if the
+corpus for a session genuinely exceeds that and the true answer scores
+outside the top 2000 on *both* cosine and BM25, it never reaches the
+reranker. At the "single long-running session" scale this project targets,
+that's not been an observed problem; it would need re-validation before
+assuming it holds at a much larger multi-tenant scale.
+
 ## Key design choices / trade-offs
 
 - **Storage backends.** Tier 1 = Redis (fallback: in-process dict).
@@ -66,6 +141,18 @@ python -m tams.cli eval --num-filler-turns 100 --ablation none
   retrieval pipeline (`HybridRetriever.retrieve` catches everything and
   falls back to Tier-1-only). Extractors never raise — the circuit breaker
   (`CircuitOpenError`) is caught internally and extraction returns `[]`.
+  `chat()`/`chat_json()` degrade to a safe fallback string/`{}` after
+  retries are exhausted rather than raising into the hot path.
+- **Lossless eviction.** Tier 1 → Tier 2 compaction uses a non-destructive
+  peek-then-commit pattern (`plan_eviction()` / `commit_eviction()` in
+  [`tier1_working_memory.py`](tams/tiers/tier1_working_memory.py)): raw turns
+  are only popped from Tier 1 *after* Tier 2 ingestion (chunking + anchored
+  summary extension, which calls `embed()`) has durably succeeded. If that
+  write fails for any reason — provider outage, a swapped-in provider that
+  doesn't support embeddings (see below) — Tier 1 is left untouched and
+  compaction simply retries on a later turn, instead of silently losing
+  turns. This was found and fixed via real-provider testing, not
+  theoretically — see "OpenAI-SDK-compatible providers" below.
 - **Verifier is a *bounded* hot-path step, not a background one.** The spec
   asks for a post-generation groundedness check (which the user is waiting
   on) but also for "no recursive LLM calls in the hot path, only async
@@ -94,6 +181,49 @@ python -m tams.cli eval --num-filler-turns 100 --ablation none
   applied only at *retrieval-ranking* time — it never deletes or hides rows
   from direct queries (`active_facts`, exports), only from the
   decay-weighted ranking used during hybrid retrieval scoring.
+
+## OpenAI-SDK-compatible providers (Abacus AI RouteLLM and others)
+
+`llm_base_url` (`OPENAI_BASE_URL` env var) lets `tams/llm/client.py` point
+at any OpenAI-SDK-compatible gateway instead of OpenAI directly — Abacus AI
+RouteLLM, OpenRouter, Together, Groq, Azure OpenAI, local vLLM, etc. This
+was validated against a real Abacus RouteLLM key, not just mocked, with
+findings worth stating plainly rather than assuming:
+
+| Capability | Chat Completions (`/v1/chat/completions`, used by default) | Responses API (`/v1/responses`) |
+|---|---|---|
+| Plain chat | ✅ works | ✅ works |
+| JSON-mode structured extraction | ✅ works | ✅ works |
+| Real `usage` / token counts | ❌ fields present but `None` — see fix below | ✅ real numbers |
+| Embeddings | ❌ `404 Not Found` — confirmed via the full ~180-model catalog, no embedding model exists on this gateway at all | — (embeddings aren't part of the Responses API on OpenAI either) |
+
+Two concrete, non-hypothetical consequences of this:
+
+1. **Token-count bug, fixed.** Some gateways return a non-null `usage`
+   object whose `prompt_tokens`/`completion_tokens` fields are themselves
+   `None` rather than omitted or zero-filled. `tams/llm/client.py` originally
+   did `resp.usage.prompt_tokens if resp.usage else 0`, which lets that
+   `None` through and crashes any downstream cost-tracking arithmetic. Fixed
+   with a dedicated `_usage_tokens()` helper; regression-tested in
+   [`tests/test_llm_retry.py`](tests/test_llm_retry.py).
+2. **Embeddings are not available through Abacus RouteLLM**, confirmed two
+   ways: a direct `embeddings.create()` call returns a blanket 404, and the
+   full model catalog (`client.models.list()`) contains zero embedding
+   models among ~180 chat/image/audio/video models. Any session that needs
+   Tier 2/3 vector embeddings (chunk storage, fact storage, query
+   embedding, HITL correction embedding) needs a separate embeddings
+   source if the chat/extraction provider is Abacus — this isn't wired up
+   automatically yet, it's a known open item.
+
+A repeatable, non-mocked smoke test for whichever real provider is
+configured lives at
+[`scripts/smoke_test_provider.py`](scripts/smoke_test_provider.py) — it
+exercises `chat()`, `chat_json()`, and `embed()` independently so a failure
+in one doesn't hide results from the others:
+
+```bash
+python3 scripts/smoke_test_provider.py
+```
 
 ## Fake-LLM mode (no API key) — what to expect
 
@@ -136,6 +266,19 @@ trivially scores 1.0 (Tier 1 "full" already contains everything).
 
 ## What's intentionally out of scope for this first pass
 
+- No benchmark against other memory systems (MemGPT, Mem0, Zep, LangMem,
+  etc.) exists in this repo. Any claim about this system being "better"
+  than those would be unsubstantiated marketing, not engineering — the
+  design-rationale section above explains *why* each piece exists, which is
+  a different and more honest claim than *better than X*.
+- A FastAPI service layer is deliberately deferred until real-provider
+  testing (above) is complete — today this is a CLI + library, not a
+  served app.
+- No RBAC, consent management, PII redaction, or automated data-retention
+  policy exists yet in [`tams/governance/`](tams/governance) — only
+  export/delete/correct with an audit trail (`CorrectionLog`). These are
+  real gaps for anything beyond a single-user/dev context, not implemented
+  gaps hidden behind vague wording.
 - The MemGPT-style pure-summarization baseline
   (`tams/eval/baselines.py::memgpt_style_compress`) and the plain
   cosine-only RAG baseline are implemented as callable functions but aren't
@@ -144,3 +287,6 @@ trivially scores 1.0 (Tier 1 "full" already contains everything).
   Python / easy follow-up CLI flags).
 - `tams costs` reports from the ledger but doesn't yet have a persistent
   dashboard/UI — it's a `rich`-printed JSON report today.
+- Retrieval pool size (`retrieval_pool_size`, default 2000) is a hard
+  cutoff, not an adaptive one — see the retrieval-funnel section above for
+  exactly where that could matter.
