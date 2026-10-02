@@ -124,3 +124,33 @@ def test_embed_retries_then_succeeds(settings):
     vectors = client.embed(["a", "b"])
     assert vectors == [[0.1, 0.2], [0.3, 0.4]]
     assert stub.calls == 2
+
+
+def test_chat_handles_usage_object_with_none_token_fields(settings):
+    """Regression test: some OpenAI-SDK-compatible gateways (observed with
+    Abacus AI RouteLLM in real-mode testing) return a `usage` object that is
+    present but has None fields instead of omitting it or zero-filling it.
+    This must not crash chat()/chat_json()/embed() or their cost tracking."""
+    payload = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="PONG"))],
+        usage=SimpleNamespace(prompt_tokens=None, completion_tokens=None),
+    )
+    stub = _FlakyOpenAI(fail_times=0, success_payload=payload)
+    client = _make_real_client(settings, stub)
+
+    result = client.chat([{"role": "user", "content": "hi"}], model="m")
+    assert result.text == "PONG"
+    assert result.prompt_tokens == 0
+    assert result.completion_tokens == 0
+
+
+def test_embed_handles_usage_object_with_none_prompt_tokens(settings):
+    payload = SimpleNamespace(
+        data=[SimpleNamespace(embedding=[0.1, 0.2])],
+        usage=SimpleNamespace(prompt_tokens=None),
+    )
+    stub = _FlakyOpenAI(fail_times=0, success_payload=payload)
+    client = _make_real_client(settings, stub)
+
+    vectors = client.embed(["a"])
+    assert vectors == [[0.1, 0.2]]

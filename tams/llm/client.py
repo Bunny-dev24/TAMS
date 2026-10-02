@@ -17,6 +17,20 @@ CostSink = Callable[[str, str, int, int, float], None]
 # name/purpose, model, prompt_tokens, completion_tokens, latency_s
 
 
+def _usage_tokens(usage: Any) -> tuple[int, int]:
+    """Safely pull (prompt_tokens, completion_tokens) out of an OpenAI-SDK
+    usage object. Some OpenAI-SDK-compatible gateways (observed with Abacus
+    AI RouteLLM) return a `usage` object that is present but has `None`
+    fields instead of omitting it entirely or zero-filling it — a bare
+    `resp.usage.prompt_tokens if resp.usage else 0` lets that `None` through
+    and crashes any downstream arithmetic (e.g. cost tracking)."""
+    if usage is None:
+        return 0, 0
+    pt = getattr(usage, "prompt_tokens", None) or 0
+    ct = getattr(usage, "completion_tokens", None) or 0
+    return pt, ct
+
+
 @dataclass
 class ChatResult:
     text: str
@@ -60,8 +74,7 @@ class LLMClient:
             max_tokens=max_tokens,
         )
         text = resp.choices[0].message.content or ""
-        pt = resp.usage.prompt_tokens if resp.usage else 0
-        ct = resp.usage.completion_tokens if resp.usage else 0
+        pt, ct = _usage_tokens(resp.usage)
         return text, pt, ct
 
     def chat(
@@ -115,8 +128,7 @@ class LLMClient:
             # Retry: malformed JSON is often a one-off model hiccup — a fresh
             # call frequently succeeds where re-parsing the same text can't.
             raise RuntimeError(f"model returned invalid JSON: {raw[:200]!r}") from e
-        pt = resp.usage.prompt_tokens if resp.usage else 0
-        ct = resp.usage.completion_tokens if resp.usage else 0
+        pt, ct = _usage_tokens(resp.usage)
         return result, pt, ct
 
     def chat_json(
@@ -150,7 +162,7 @@ class LLMClient:
     def _call_openai_embed(self, texts: list[str], model: str):
         resp = self._openai.embeddings.create(model=model, input=texts)
         vectors = [d.embedding for d in resp.data]
-        pt = resp.usage.prompt_tokens if resp.usage else 0
+        pt = getattr(resp.usage, "prompt_tokens", None) or 0 if resp.usage else 0
         return vectors, pt
 
     def embed(self, texts: list[str], purpose: str = "embed") -> list[list[float]]:
