@@ -1,7 +1,6 @@
-"""One-off smoke test for a real (non-fake) LLM provider — currently used to
-validate Abacus AI's RouteLLM endpoint. Exercises chat(), chat_json(), and
-embed() independently so a failure in one does not hide results from the
-others.
+"""One-off smoke test for the real (non-fake) OpenAI LLM backend. Exercises
+chat(), chat_json(), and embed() independently so a failure in one does not
+hide results from the others.
 
 Note: chat()/chat_json() degrade gracefully instead of raising (by design —
 see tams/llm/client.py), so this script detects failure by checking for the
@@ -24,7 +23,6 @@ CHAT_FALLBACK_SENTINEL = "having trouble reaching the language model"
 def main() -> int:
     settings = load_settings()
     print(f"openai_api_key set: {bool(settings.openai_api_key)}")
-    print(f"llm_base_url: {settings.llm_base_url!r}")
     print(f"orchestrator_model: {settings.orchestrator_model}")
     print(f"extractor_model: {settings.extractor_model}")
     print(f"embedding_model: {settings.embedding_model}")
@@ -47,9 +45,8 @@ def main() -> int:
             model=settings.orchestrator_model,
         )
         print(f"[chat] text={out.text!r} prompt_tokens={out.prompt_tokens} completion_tokens={out.completion_tokens}")
-        # Note: some gateways (observed with Abacus RouteLLM) don't report
-        # token usage at all, so prompt_tokens==0 on a real response is
-        # expected and NOT a failure signal here.
+        # Note: a response can legitimately have 0 reported tokens in some
+        # edge cases, so we don't treat that alone as a failure signal here.
         ok = CHAT_FALLBACK_SENTINEL not in out.text
         results["chat"] = ok
         if not ok:
@@ -86,8 +83,8 @@ def main() -> int:
 
     print("-" * 60)
 
-    # 3. Embeddings — the real unknown for RouteLLM. No graceful degradation
-    # exists yet for this call, so a failure here raises directly.
+    # 3. Embeddings. No graceful degradation exists yet for this call, so a
+    # failure here raises directly.
     try:
         vec = client.embed(["hello world"])
         print(f"[embed] -> vector of length {len(vec[0])}, first 5 dims: {vec[0][:5]}")

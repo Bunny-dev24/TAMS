@@ -9,11 +9,6 @@ class Settings(BaseSettings):
 
     # --- LLM ---
     openai_api_key: str | None = None
-    # Any OpenAI-SDK-compatible endpoint (Abacus AI RouteLLM/ChatLLM,
-    # OpenRouter, Together, Groq, Azure OpenAI, local vLLM, etc). Leave unset
-    # to use OpenAI's own endpoint. When set, `openai_api_key` is sent as the
-    # bearer token for THIS endpoint instead of OpenAI's.
-    llm_base_url: str | None = None
     orchestrator_model: str = "gpt-4.1"
     verifier_model: str = "gpt-4.1"
     extractor_model: str = "gpt-4.1-mini"
@@ -55,19 +50,15 @@ class Settings(BaseSettings):
 
 
 def load_settings() -> Settings:
-    """Load settings. `openai_api_key` / `llm_base_url` intentionally also
-    accept the unprefixed standard `OPENAI_API_KEY` / `OPENAI_BASE_URL` env
-    vars (what most tooling, and most OpenAI-compatible providers' docs,
-    tell you to set), in addition to the TAMS_-prefixed versions."""
+    """Load settings. `openai_api_key` intentionally also accepts the
+    unprefixed standard `OPENAI_API_KEY` env var (what most tooling tells
+    you to set), in addition to the TAMS_-prefixed version."""
     import os
 
     base = Settings()
     key = os.environ.get("OPENAI_API_KEY")
     if key:
         base.openai_api_key = key
-    base_url = os.environ.get("OPENAI_BASE_URL")
-    if base_url:
-        base.llm_base_url = base_url
     return base
 
 

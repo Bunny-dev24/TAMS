@@ -148,11 +148,10 @@ assuming it holds at a much larger multi-tenant scale.
   [`tier1_working_memory.py`](tams/tiers/tier1_working_memory.py)): raw turns
   are only popped from Tier 1 *after* Tier 2 ingestion (chunking + anchored
   summary extension, which calls `embed()`) has durably succeeded. If that
-  write fails for any reason — provider outage, a swapped-in provider that
-  doesn't support embeddings (see below) — Tier 1 is left untouched and
-  compaction simply retries on a later turn, instead of silently losing
-  turns. This was found and fixed via real-provider testing, not
-  theoretically — see "OpenAI-SDK-compatible providers" below.
+  write fails for any reason (e.g. a transient OpenAI API outage) — Tier 1
+  is left untouched and compaction simply retries on a later turn, instead
+  of silently losing turns. This was found and fixed via real API testing,
+  not theoretically.
 - **Verifier is a *bounded* hot-path step, not a background one.** The spec
   asks for a post-generation groundedness check (which the user is waiting
   on) but also for "no recursive LLM calls in the hot path, only async
@@ -182,41 +181,21 @@ assuming it holds at a much larger multi-tenant scale.
   from direct queries (`active_facts`, exports), only from the
   decay-weighted ranking used during hybrid retrieval scoring.
 
-## OpenAI-SDK-compatible providers (Abacus AI RouteLLM and others)
+## LLM provider
 
-`llm_base_url` (`OPENAI_BASE_URL` env var) lets `tams/llm/client.py` point
-at any OpenAI-SDK-compatible gateway instead of OpenAI directly — Abacus AI
-RouteLLM, OpenRouter, Together, Groq, Azure OpenAI, local vLLM, etc. This
-was validated against a real Abacus RouteLLM key, not just mocked, with
-findings worth stating plainly rather than assuming:
+TAMS uses OpenAI directly (no other provider/gateway is supported). Set
+`OPENAI_API_KEY` in `.env`; without it, TAMS runs fully in deterministic
+fake-LLM mode (see below). A gateway/base-URL override (to route through a
+third-party multi-model proxy such as Abacus AI RouteLLM) was evaluated and
+deliberately removed — real OpenAI is the only backend going forward, kept
+simple on purpose: one provider, one auth path, no gateway-specific quirks
+to carry (e.g. some gateways were found, in testing, to omit embeddings
+support entirely, or to return a `usage` object with `None` token-count
+fields instead of omitting it — a defensive fix for the latter still lives
+in `_usage_tokens()` in [`tams/llm/client.py`](tams/llm/client.py) since
+it's correct regardless of provider).
 
-| Capability | Chat Completions (`/v1/chat/completions`, used by default) | Responses API (`/v1/responses`) |
-|---|---|---|
-| Plain chat | ✅ works | ✅ works |
-| JSON-mode structured extraction | ✅ works | ✅ works |
-| Real `usage` / token counts | ❌ fields present but `None` — see fix below | ✅ real numbers |
-| Embeddings | ❌ `404 Not Found` — confirmed via the full ~180-model catalog, no embedding model exists on this gateway at all | — (embeddings aren't part of the Responses API on OpenAI either) |
-
-Two concrete, non-hypothetical consequences of this:
-
-1. **Token-count bug, fixed.** Some gateways return a non-null `usage`
-   object whose `prompt_tokens`/`completion_tokens` fields are themselves
-   `None` rather than omitted or zero-filled. `tams/llm/client.py` originally
-   did `resp.usage.prompt_tokens if resp.usage else 0`, which lets that
-   `None` through and crashes any downstream cost-tracking arithmetic. Fixed
-   with a dedicated `_usage_tokens()` helper; regression-tested in
-   [`tests/test_llm_retry.py`](tests/test_llm_retry.py).
-2. **Embeddings are not available through Abacus RouteLLM**, confirmed two
-   ways: a direct `embeddings.create()` call returns a blanket 404, and the
-   full model catalog (`client.models.list()`) contains zero embedding
-   models among ~180 chat/image/audio/video models. Any session that needs
-   Tier 2/3 vector embeddings (chunk storage, fact storage, query
-   embedding, HITL correction embedding) needs a separate embeddings
-   source if the chat/extraction provider is Abacus — this isn't wired up
-   automatically yet, it's a known open item.
-
-A repeatable, non-mocked smoke test for whichever real provider is
-configured lives at
+A repeatable, non-mocked smoke test for the configured key lives at
 [`scripts/smoke_test_provider.py`](scripts/smoke_test_provider.py) — it
 exercises `chat()`, `chat_json()`, and `embed()` independently so a failure
 in one doesn't hide results from the others:

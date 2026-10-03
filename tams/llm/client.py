@@ -19,11 +19,10 @@ CostSink = Callable[[str, str, int, int, float], None]
 
 def _usage_tokens(usage: Any) -> tuple[int, int]:
     """Safely pull (prompt_tokens, completion_tokens) out of an OpenAI-SDK
-    usage object. Some OpenAI-SDK-compatible gateways (observed with Abacus
-    AI RouteLLM) return a `usage` object that is present but has `None`
-    fields instead of omitting it entirely or zero-filling it — a bare
-    `resp.usage.prompt_tokens if resp.usage else 0` lets that `None` through
-    and crashes any downstream arithmetic (e.g. cost tracking)."""
+    usage object. Some gateways return a `usage` object that is present but
+    has `None` fields instead of omitting it entirely or zero-filling it —
+    a bare `resp.usage.prompt_tokens if resp.usage else 0` lets that `None`
+    through and crashes any downstream arithmetic (e.g. cost tracking)."""
     if usage is None:
         return 0, 0
     pt = getattr(usage, "prompt_tokens", None) or 0
@@ -50,12 +49,7 @@ class LLMClient:
         else:
             from openai import OpenAI  # imported lazily so fake mode has no hard dep
 
-            # base_url unset -> real OpenAI endpoint. Set it to point at any
-            # OpenAI-SDK-compatible gateway instead (Abacus AI, OpenRouter,
-            # Together, Groq, Azure OpenAI, local vLLM, ...) — model names
-            # in config (orchestrator_model/extractor_model/...) then just
-            # need to match whatever that provider calls its models.
-            self._openai = OpenAI(api_key=settings.openai_api_key, base_url=settings.llm_base_url or None)
+            self._openai = OpenAI(api_key=settings.openai_api_key)
             self._backend = None
 
     # ---------------------------------------------------------------- chat
