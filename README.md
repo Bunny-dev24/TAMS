@@ -1,32 +1,113 @@
-# TAMS v2 — Tiered Agent Memory System with Lossless Fact Extraction
+<div align="center">
 
-A 3-tier memory architecture for long-running agent conversations: raw
-working memory, a raw-chunk long-session store (no narrative summarization),
-and a structured, lossless fact store for 5 protected categories — fronted
-by a hybrid (cosine + BM25 + LLM rerank) retrieval pipeline and a 3-agent
-system (Orchestrator / Memory Manager / Verifier).
+# TAMS v2
+### Tiered Agent Memory System with Lossless Fact Extraction
 
-See [`tams/`](tams) for the implementation. This README covers setup,
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-50%20passing-brightgreen.svg)](tests)
+[![Status](https://img.shields.io/badge/status-active%20development-orange.svg)](#whats-intentionally-out-of-scope-for-this-first-pass)
+
+A 3-tier memory architecture for long-running agent conversations, built so
+that **nothing important is ever silently lost** and **retrieval has an
+actual engineering justification instead of just "we embedded it and
+cosine-matched it."**
+
+</div>
+
+---
+
+## What is TAMS?
+
+Most "agent memory" implementations either (a) summarize everything into a
+lossy blob once the context window fills up, or (b) throw raw text into a
+vector store and hope cosine similarity finds the right chunk later. Both
+break down the moment a user says *"actually, change the timeout from 30 to
+45"* three hundred turns later — the summary smoothed the number away, and
+the embedding space doesn't preserve numeric distance as semantic distance.
+
+TAMS is a working implementation of a different approach:
+
+- Raw working memory (**Tier 1**) is never summarized — it's evicted whole,
+  only after it's durably persisted downstream.
+- A raw-chunk long-session store (**Tier 2**) keeps verbatim text, not a
+  narrative summary.
+- A structured, lossless **fact store (Tier 3)** extracts and tracks 5
+  protected categories (numeric values, constraints, decisions,
+  dependencies, preferences) with full conflict/supersede history — nothing
+  is ever overwritten or deleted, only marked superseded.
+- A hybrid **cosine + BM25 + LLM-rerank** retrieval pipeline feeds a 3-agent
+  system (**Orchestrator / Memory Manager / Verifier**) that generates,
+  extracts, and groundedness-checks every turn.
+
+See [`tams/`](tams) for the implementation. This README covers setup, the
 architecture-to-code mapping, **why the retrieval pipeline is shaped the
 way it is** (the part most memory systems get wrong or skip explaining),
-running the eval harness, and known limitations — including the ones that
-are still open, stated plainly rather than hand-waved.
+the full CLI reference, running the eval harness, and known limitations —
+including the ones that are still open, stated plainly rather than
+hand-waved.
+
+## Table of contents
+
+- [Features](#features)
+- [Quickstart](#quickstart)
+- [CLI reference](#cli-reference)
+- [Architecture → code map](#architecture--code-map)
+- [Why the retrieval funnel is shaped the way it is](#why-the-retrieval-funnel-is-shaped-the-way-it-is)
+- [Key design choices / trade-offs](#key-design-choices--trade-offs)
+- [LLM provider](#llm-provider)
+- [Offline mode (no API key)](#offline-mode-no-api-key--what-to-expect)
+- [Eval harness](#eval-harness)
+- [Project structure](#project-structure)
+- [What's intentionally out of scope](#whats-intentionally-out-of-scope-for-this-first-pass)
+- [License](#license)
+
+## Features
+
+- **3-tier memory**: synchronous raw working memory → async raw-chunk
+  store → structured lossless fact store, with non-destructive
+  peek-then-commit eviction between tiers.
+- **5 protected fact categories** extracted in the background: numeric,
+  constraint, decision, dependency, preference — each with conflict
+  detection and a supersede-never-delete audit trail.
+- **Hybrid retrieval**: cosine (paraphrase) + BM25 (exact tokens), fused,
+  then a single listwise LLM rerank over the pool — reserved for a
+  pre-filtered shortlist, not the raw corpus.
+- **3-agent system**: Orchestrator (generation), Memory Manager
+  (extraction + compaction, fire-and-forget), Verifier (bounded,
+  hot-path groundedness check with at most one regeneration pass).
+- **Graceful degradation everywhere**: every storage boundary and the
+  retrieval pipeline itself catch failures and fall back to a safe
+  default instead of raising into the hot path.
+- **Governance built in**: GDPR-style export/delete, HITL fact
+  correction with audit log, decay-weighted (not deletion-based) recency
+  scoring.
+- **Cost monitoring** per interaction via a persistent cost ledger.
+- **Fully offline dev/CI mode**: a deterministic stub backend means
+  the entire system — orchestrator, all 5 extractors, reranker, verifier,
+  eval harness — runs with zero network calls and zero cost.
+- **Eval harness**: synthetic needle-in-haystack benchmark reporting
+  recall@k per category, hallucination rate, citation coverage, latency,
+  and compaction ratio, with pluggable ablations.
 
 ## Quickstart
 
+**Requirements:** Python 3.10+. Redis and Qdrant are optional (see below).
+
 ```bash
-# 1. Install (editable) — a venv is recommended; this sandbox used:
-pip install --user --break-system-packages -e ".[dev]"
+# 1. Install (editable) — a venv is recommended
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
 
 # 2. (Optional) copy env and set your OpenAI key — without a key, TAMS runs
-#    in a fully deterministic, zero-network "fake LLM" mode (dev/CI/offline).
+#    in a fully deterministic, zero-network offline mode (dev/CI/offline).
 cp .env.example .env
 
 # 3. (Optional) bring up Redis + Qdrant for production-grade Tier 1/2 storage.
 #    Without them, TAMS gracefully falls back to in-process stores.
 docker compose up -d
 
-# 4. Run the test suite
+# 4. Run the test suite (50 tests across 14 files)
 pytest -q
 
 # 5. Chat
@@ -34,6 +115,27 @@ python -m tams.cli chat
 
 # 6. Run the needle-in-haystack eval
 python -m tams.cli eval --num-filler-turns 100 --ablation none
+```
+
+## CLI reference
+
+All commands are available via the `tams` entry point (or
+`python -m tams.cli <command>`):
+
+| Command | Description |
+|---|---|
+| `tams chat [--session-id ID] [--user-id ID]` | Interactive REPL against the Orchestrator Agent. |
+| `tams eval [--num-filler-turns N] [--seed N] [--ablation none\|no-rerank\|no-extractors\|no-decay] [--working-memory-max-turns N]` | Runs the needle-in-haystack eval harness against a full-context-stuffing baseline. |
+| `tams costs [--session-id ID] [--since-hours N]` | Prints the cost-per-interaction report from the cost ledger. |
+| `tams export USER_ID` | GDPR-style export of all stored data for a user. |
+| `tams delete USER_ID [--yes]` | Right-to-forget: hard-deletes all stored data for a user. |
+| `tams correct SESSION_ID CATEGORY FACT_ID FIELD VALUE [--note TEXT]` | Human-in-the-loop correction of a single stored fact field (audit-logged, supersede-never-delete). |
+
+A repeatable, non-mocked smoke test for your configured OpenAI key also
+lives at [`scripts/smoke_test_provider.py`](scripts/smoke_test_provider.py):
+
+```bash
+python3 scripts/smoke_test_provider.py
 ```
 
 ## Architecture → code map
@@ -185,7 +287,7 @@ assuming it holds at a much larger multi-tenant scale.
 
 TAMS uses OpenAI directly (no other provider/gateway is supported). Set
 `OPENAI_API_KEY` in `.env`; without it, TAMS runs fully in deterministic
-fake-LLM mode (see below). A gateway/base-URL override (to route through a
+deterministic offline mode (see below). A gateway/base-URL override (to route through a
 third-party multi-model proxy such as Abacus AI RouteLLM) was evaluated and
 deliberately removed — real OpenAI is the only backend going forward, kept
 simple on purpose: one provider, one auth path, no gateway-specific quirks
@@ -195,33 +297,24 @@ fields instead of omitting it — a defensive fix for the latter still lives
 in `_usage_tokens()` in [`tams/llm/client.py`](tams/llm/client.py) since
 it's correct regardless of provider).
 
-A repeatable, non-mocked smoke test for the configured key lives at
-[`scripts/smoke_test_provider.py`](scripts/smoke_test_provider.py) — it
-exercises `chat()`, `chat_json()`, and `embed()` independently so a failure
-in one doesn't hide results from the others:
-
-```bash
-python3 scripts/smoke_test_provider.py
-```
-
-## Fake-LLM mode (no API key) — what to expect
+## Offline mode (no API key) — what to expect
 
 Every LLM call (`chat`, `chat_json`, `embed`) routes through
 [`tams/llm/client.py`](tams/llm/client.py), which uses a fully deterministic
-`FakeLLMBackend` when `OPENAI_API_KEY` is unset. This makes the entire
+stub backend when `OPENAI_API_KEY` is unset. This makes the entire
 system (orchestrator, all 5 extractors, reranker, verifier, eval harness)
 runnable offline with zero network calls and zero cost — useful for CI and
 for exploring the architecture without an API key.
 
-**Important caveat:** fake embeddings are hash-seeded deterministic vectors
-with no real semantic content. BM25 (lexical) and the deterministic
-entity-match lookup still work correctly in fake mode, but **cosine
+**Important caveat:** the offline embeddings are hash-seeded deterministic
+vectors with no real semantic content. BM25 (lexical) and the deterministic
+entity-match lookup still work correctly offline, but **cosine
 similarity carries no actual meaning** — a query like *"Which database was
 chosen and why?"* won't semantically match a stored fact *"we chose
 PostgreSQL over MongoDB"* unless they share literal keywords, because there's
 no real embedding model behind the "similarity" score. With a real
 `OPENAI_API_KEY`, this is exactly the gap genuine embeddings close, and it's
-part of why the eval harness is useful: run it once in fake mode (free,
+part of why the eval harness is useful: run it once offline (free,
 structural sanity check) and once with a real key (true semantic recall
 numbers) to see the delta.
 
@@ -242,6 +335,33 @@ deliberately small by default in the CLI eval command so that compaction
 actually fires within the synthetic haystack — otherwise, with the
 production-sized context window, nothing gets evicted and every ablation
 trivially scores 1.0 (Tier 1 "full" already contains everything).
+
+## Project structure
+
+```
+TAMS/
+├── tams/
+│   ├── agents/        # Orchestrator, Memory Manager, Verifier
+│   ├── eval/          # Synthetic haystack, metrics, baselines, harness
+│   ├── extractors/     # numeric, constraint, decision, dependency, preference
+│   ├── governance/     # privacy (export/delete), HITL correction
+│   ├── identity/       # multi-session user profile store
+│   ├── llm/            # OpenAI client, offline stub backend, circuit breaker
+│   ├── retrieval/      # hybrid cosine+BM25 fusion, reranker, entity match
+│   ├── storage/        # fact DB, vector store, working memory, cost ledger
+│   ├── tiers/          # Tier 1/2/3 implementations
+│   ├── cli.py          # tams chat / eval / costs / export / delete / correct
+│   ├── config.py       # pydantic-settings, all TAMS_* env vars
+│   ├── decay.py        # recency+usage decay scoring
+│   ├── session.py      # wires a Session's stores + clients together
+│   └── tokens.py        # tiktoken-based token counting
+├── tests/              # 50 tests across 14 files (pytest, asyncio_mode=auto)
+├── scripts/
+│   └── smoke_test_provider.py   # non-mocked real-key smoke test
+├── docker-compose.yml  # optional Redis + Qdrant
+├── .env.example
+└── pyproject.toml
+```
 
 ## What's intentionally out of scope for this first pass
 
@@ -269,3 +389,7 @@ trivially scores 1.0 (Tier 1 "full" already contains everything).
 - Retrieval pool size (`retrieval_pool_size`, default 2000) is a hard
   cutoff, not an adaptive one — see the retrieval-funnel section above for
   exactly where that could matter.
+
+## License
+
+[MIT](LICENSE) — see the [`LICENSE`](LICENSE) file for the full text.

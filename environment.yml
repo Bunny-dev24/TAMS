@@ -1,0 +1,20 @@
+# Conda environment for TAMS.
+#
+# Create + activate with:
+#     conda env create -f environment.yml
+#     conda activate tams
+#
+# Then run the offline demo:
+#     python scripts/demo_recall.py
+#
+# To update after changing requirements.txt:
+#     conda env update -f environment.yml --prune
+name: tams
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.10
+  - pip
+  - pip:
+      - -r requirements.txt

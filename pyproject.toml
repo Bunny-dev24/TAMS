@@ -2,6 +2,7 @@
 name = "tams"
 version = "0.2.0"
 description = "TAMS v2 — Tiered Agent Memory System with Lossless Fact Extraction"
+license = "MIT"
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.40.0",
