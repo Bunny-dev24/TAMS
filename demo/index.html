@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ramu Ki Chai Tapri — TAMS Demo</title>
+<script src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>
+tailwind.config = { theme: { extend: { fontFamily: {
+  display: ['Fraunces','Georgia','serif'],
+  inter: ['Inter','sans-serif'],
+  grotesk: ['"Space Grotesk"','sans-serif']
+}}}};
+</script>
+<link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,400..700&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef } = React;
+
+/* ============================================================ data */
+
+const ROUNDS = [
+  {
+    day: "Somvar, subah 8:10",
+    say: "Bhaiya, aaj se meri chai bina cheeni. Doctor ne mana kiya hai.",
+    kind: "Pakki shart",
+    kindEn: "constraint",
+    ask: "Bhaiya, wahi wali — hamesha wali.",
+    guessQ: "200 customers baad, purana Ramu cheeni daalega?",
+    guessAns: true,
+    old: [
+      { n: "Patti", ok: true }, { n: "Doodh", ok: true },
+      { n: "Cheeni, 2 chammach", ok: false }, { n: "Adrak", ok: true },
+    ],
+    tams: [
+      { n: "Patti", ok: true }, { n: "Doodh", ok: true },
+      { n: "Cheeni — nahi", ok: true, flag: true }, { n: "Adrak", ok: true },
+    ],
+    oldSays: "Lijiye sahab, hamesha wali — do chammach, jaisi aap peete ho.",
+    tamsSays: "Lijiye — bina cheeni. Doctor wali baat yaad hai mujhe.",
+    note: "ARVIND JI — CHEENI: NAHI. Wajah: doctor. Ye shart har order pe lagu.",
+    why:
+      "Purane Ramu ne aapko 200 baar meethi chai di thi aur ek baar mana sunna tha. Uske dimaag mein 'jo zyada baar hua wahi sach hai' chalta hai — isliye bhari cheez jeet gayi. TAMS wale Ramu ne is baat ko order nahi, shart maana. Shart purani nahi hoti.",
+    cost: "Sugar patient ko 2 chammach cheeni.",
+  },
+  {
+    day: "Mangalvar, 8:40",
+    say: "Patti ek chammach se do kar do bhaiya — phiki lagti hai.",
+    kind: "Badla hua number",
+    kindEn: "numeric update",
+    ask: "Wahi, roz wali.",
+    guessQ: "Purana Ramu kitni patti daalega — ek ya do?",
+    guessAns: true,
+    old: [
+      { n: "Patti, 1 chammach", ok: false }, { n: "Doodh", ok: true },
+      { n: "Cheeni — nahi", ok: true }, { n: "Adrak", ok: true },
+    ],
+    tams: [
+      { n: "Patti, 2 chammach", ok: true, flag: true }, { n: "Doodh", ok: true },
+      { n: "Cheeni — nahi", ok: true }, { n: "Adrak", ok: true },
+    ],
+    oldSays: "Ek chammach patti — jaise hamesha banati hoon.",
+    tamsSays: "Do chammach. Pehle ek thi, aapne badhwayi thi.",
+    note: "PATTI: 2 chammach. (Pehle 1 thi — kaat di, mitayi nahi.)",
+    why:
+      "Yahaan asli dikkat ye hai ki 'ek chammach patti' aur 'do chammach patti' — dono line sunne mein ek jaisi hain. Purana Ramu farak hi nahi kar pata ki kaunsi nayi thi. TAMS wale Ramu ne purani line pe line kheech di, mitaya nahi — isliye agar kal aap poochho 'pehle kitni thi', wo bhi bata dega.",
+    cost: "Roz phiki chai.",
+  },
+  {
+    day: "Budhvar, 9:05",
+    say: "Elaichi bilkul mat daalna — mujhe allergy hai, pichli baar haath pe nishaan aa gaye the.",
+    kind: "Pasand, aur uski wajah",
+    kindEn: "preference + reason",
+    ask: "Ek chai dena.",
+    guessQ: "Do hafte baad purana Ramu elaichi daalega?",
+    guessAns: true,
+    old: [
+      { n: "Patti, 2 chammach", ok: true }, { n: "Doodh", ok: true },
+      { n: "Elaichi", ok: false }, { n: "Adrak", ok: true },
+    ],
+    tams: [
+      { n: "Patti, 2 chammach", ok: true }, { n: "Doodh", ok: true },
+      { n: "Elaichi — nahi", ok: true, flag: true }, { n: "Adrak", ok: true },
+    ],
+    oldSays: "Aaj special banayi hai — elaichi daal di, khushbu aa rahi hai na.",
+    tamsSays: "Elaichi nahi daali. Allergy wali baat likhi hui hai.",
+    note: "ELAICHI: NAHI. Wajah: allergy, nishaan aate hain. Khatre wali baat.",
+    why:
+      "Sirf 'elaichi nahi' likhna kaafi nahi tha. Wajah bhi likhi — kyunki jis din tapri pe nayi elaichi wali chai shuru hogi, bina wajah wali baat ko Ramu 'chhoti pasand' samajh ke tod dega. Wajah ke saath wo baat khatre wali ban jaati hai, aur khatre wali baatein tutti nahi.",
+    cost: "Allergy. Ye sirf kharab chai nahi thi.",
+  },
+  {
+    day: "Guruvar, 8:55",
+    say: "Aaj Pooja bhi aayegi. Usko adrak nahi chahiye, aur cheeni ek chammach.",
+    kind: "Kiske liye",
+    kindEn: "entity",
+    ask: "Do chai — ek meri, ek Pooja ki.",
+    guessQ: "Purana Ramu Pooja ko pehchanega?",
+    guessAns: true,
+    old: [
+      { n: "Pooja ki chai: Adrak", ok: false },
+      { n: "Pooja ki chai: Cheeni nahi", ok: false },
+      { n: "Aapki chai: sahi", ok: true },
+    ],
+    tams: [
+      { n: "Pooja ki chai: Adrak nahi", ok: true, flag: true },
+      { n: "Pooja ki chai: Cheeni 1 chammach", ok: true, flag: true },
+      { n: "Aapki chai: sahi", ok: true },
+    ],
+    oldSays: "Pooja... kaun Pooja? Dono ek jaisi bana di.",
+    tamsSays: "Pooja ji ki alag — adrak nahi, ek chammach cheeni.",
+    note: "POOJA — adrak: nahi. cheeni: 1. (Arvind ji se alag insaan.)",
+    why:
+      "Purane Ramu ke paas sab baatein ek hi dher mein padi hain. 'Adrak nahi' kiske liye tha, uspe naam nahi laga. TAMS wale Ramu ne har baat ke saath naam joda — isliye wo naam se seedha utha leta hai, dher mein dhoondhta hi nahi.",
+    cost: "Mehmaan ko galat chai.",
+  },
+  {
+    day: "Shukravar, 9:20",
+    say: "Pooja wali jaisi hi dena, bas badi size mein.",
+    kind: "Dusri baat se judi baat",
+    kindEn: "dependency",
+    ask: "Wahi — Pooja wali, badi.",
+    guessQ: "Purana Ramu 'Pooja wali' ka matlab samajhega?",
+    guessAns: true,
+    old: [
+      { n: "Badi size", ok: true },
+      { n: "Adrak — daal di", ok: false },
+      { n: "Cheeni double", ok: false },
+    ],
+    tams: [
+      { n: "Badi size", ok: true },
+      { n: "Adrak nahi", ok: true, flag: true },
+      { n: "Cheeni 1 chammach hi", ok: true, flag: true },
+    ],
+    oldSays: "Badi wali — sab kuch double kar diya.",
+    tamsSays: "Badi size, par Pooja wale niyam waise hi. Cheeni nahi badhayi.",
+    note: "BADI CHAI = POOJA wale niyam + size bada. Sirf paani-doodh double.",
+    why:
+      "Yahaan 'badi' ka matlab poori baat nahi thi — wo Pooja wali baat pe tiki hui thi. Purana Ramu sirf aakhri jumla pakadta hai, isliye 'double' sab pe laga diya. TAMS wale Ramu ne tara jod ke rakha tha ki ye baat kis baat se judi hai, to dono saath uthi.",
+    cost: "Ek chammach ki jagah do — aur adrak.",
+  },
+  {
+    day: "Shanivar, 7:30",
+    say: "Kal office ka 20 cup ka order cancel — ab sirf 5 chahiye.",
+    kind: "Faisla jo badal gaya",
+    kindEn: "decision / supersede",
+    ask: "Kal ka order ready rakhna.",
+    guessQ: "Purana Ramu kitne cup banayega?",
+    guessAns: true,
+    old: [
+      { n: "20 cup bana diye", ok: false },
+      { n: "15 cup bekaar", ok: false },
+    ],
+    tams: [
+      { n: "5 cup", ok: true, flag: true },
+      { n: "Purana 20 wala: kaata hua", ok: true },
+    ],
+    oldSays: "Bees cup taiyaar hain sahab, jaisa aapne bola tha.",
+    tamsSays: "Paanch. Bees wala order aapne shanivar ko cancel kiya tha.",
+    note: "ORDER: 5 cup. — Purana: 20 cup, ab lagu nahi (shanivar ko badla).",
+    why:
+      "Cancel karna bhi ek baat hai, par wo purani baat ke upar chadhti hai. Purane Ramu ke dher mein 'bees cup' wali baat zyada bhaari thi — pehle aayi thi, zyada baar dohrayi gayi thi. TAMS wale Ramu ne purani line kaat di par mitayi nahi, taaki kal hisaab mein pata rahe ki kya badla tha.",
+    cost: "15 cup ka doodh bekaar. Paisa gaya.",
+  },
+];
+
+const FINANCE = {
+  day: "Agle mahine — ab chai nahi, paisa",
+  say: "Mera risk high se low kar do. Ghar ke liye paise bacha raha hoon, agle saal lena hai.",
+  ask: "Mere liye kuch acha fund suggest karo.",
+  guessQ: "200 messages baad purana bot kya suggest karega?",
+  old: [
+    { n: "Small-cap aggressive fund", ok: false },
+    { n: "Aapka purana high-risk profile", ok: false },
+  ],
+  tams: [
+    { n: "Short-duration debt fund", ok: true, flag: true },
+    { n: "Ghar ka goal — agla saal", ok: true, flag: true },
+  ],
+  oldSays: "Aap aggressive investor ho — small-cap fund dekhiye, 3 saal mein acha return.",
+  tamsSays: "Aapne risk low kiya tha aur paisa agle saal chahiye. Debt fund theek rahega.",
+  note: "RISK: LOW (pehle high tha — kaata). GOAL: ghar, agla saal. Dono shart.",
+  why:
+    "Wahi galti hai. Bilkul wahi. Sirf cheeni ki jagah ab aapki jama-poonji hai — aur galat chai aap thook sakte ho, galat fund saal bhar baad pata chalta hai.",
+  cost: "Ghar ke paise 12 mahine ke liye girte hue market mein.",
+};
+
+/* ============================================================ bits */
+
+const Label = ({ children, className = "" }) => (
+  <div className={"text-xs uppercase tracking-widest " + className}>{children}</div>
+);
+
+function Cup({ bad, big, finance }) {
+  const chai = bad ? "#b45309" : "#92400e";
+  return (
+    <svg viewBox="0 0 120 150" className="w-24 h-32 mx-auto" aria-hidden="true">
+      {!finance && (
+        <g stroke={bad ? "#d6d3d1" : "#a8a29e"} strokeWidth="2" fill="none" strokeLinecap="round">
+          <path d="M45 34 C40 26 50 22 45 14" />
+          <path d="M60 32 C55 23 65 19 60 10" />
+          <path d="M75 34 C70 26 80 22 75 14" />
+        </g>
+      )}
+      {finance ? (
+        <g>
+          <rect x="22" y="52" width="76" height="60" fill="none" stroke="#1c1917" strokeWidth="2.5" />
+          <path d="M22 52 L60 30 L98 52" fill="none" stroke="#1c1917" strokeWidth="2.5" strokeLinejoin="round" />
+          <path d={bad ? "M34 100 L52 84 L68 94 L86 66" : "M34 86 L52 84 L68 83 L86 80"}
+            fill="none" stroke={bad ? "#b91c1c" : "#b45309"} strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" />
+          <circle cx="86" cy={bad ? 66 : 80} r="4" fill={bad ? "#b91c1c" : "#b45309"} />
+        </g>
+      ) : (
+        <g>
+          <path d={big ? "M24 44 L30 132 Q31 140 39 140 L81 140 Q89 140 90 132 L96 44 Z"
+            : "M30 50 L36 128 Q37 136 45 136 L75 136 Q83 136 84 128 L90 50 Z"}
+            fill="#fef3c7" stroke="#1c1917" strokeWidth="2.5" strokeLinejoin="round" />
+          <path d={big ? "M27 62 L33 132 Q34 139 40 139 L80 139 Q86 139 87 132 L93 62 Z"
+            : "M33 66 L37.5 128 Q38 135 45 135 L75 135 Q82 135 82.5 128 L87 66 Z"} fill={chai} />
+          <ellipse cx="60" cy={big ? 62 : 66} rx={big ? 33 : 27} ry="5" fill={bad ? "#c2863d" : "#a16207"} />
+          <path d={big ? "M24 44 L96 44" : "M30 50 L90 50"} stroke="#1c1917" strokeWidth="2.5" strokeLinecap="round" />
+        </g>
+      )}
+    </svg>
+  );
+}
+
+function Crowd({ running, done, onDone, reduced }) {
+  const [n, setN] = useState(0);
+  const started = useRef(false);
+  useEffect(() => {
+    if (!running || started.current) return;
+    started.current = true;
+    if (reduced) { setN(200); onDone(); return; }
+    const t = setInterval(() => {
+      setN((v) => {
+        if (v >= 200) { clearInterval(t); onDone(); return 200; }
+        return v + 4;
+      });
+    }, 34);
+    return () => clearInterval(t);
+  }, [running, reduced, onDone]);
+  const shown = done ? 200 : n;
+  return (
+    <div className="border border-stone-300 bg-white">
+      <div className="px-5 py-3 border-b border-stone-200 flex items-baseline justify-between">
+        <Label className="text-stone-500">Din beet rahe hain</Label>
+        <span className="font-bold text-2xl text-amber-700 tabular-nums">{shown}</span>
+      </div>
+      <div className="px-5 py-5">
+        <div className="flex flex-wrap gap-1" aria-hidden="true">
+          {Array.from({ length: 40 }).map((_, i) => (
+            <span key={i} className="w-2.5 h-5 rounded-sm"
+              style={{ backgroundColor: i < Math.floor(shown / 5) ? "#1c1917" : "#e7e5e4" }} />
+          ))}
+        </div>
+        <p className="mt-4 text-sm text-stone-600 leading-relaxed" style={{ textWrap: "pretty" }}>
+          Itne log aapke baad aaye. Sabne kuch na kuch bola. Purane Ramu ke dimaag mein aapki baat
+          sabse neeche dab gayi — <span className="text-stone-900 font-semibold">mitayi nahi, bas dab gayi.</span>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function CupPanel({ title, sub, bad, items, says, big, finance }) {
+  return (
+    <div className={"border bg-white " + (bad ? "border-red-700" : "border-amber-700")}>
+      <div className={"px-4 py-2.5 " + (bad ? "bg-red-700" : "bg-amber-700")}>
+        <div className="text-xs uppercase tracking-widest text-amber-50">{title}</div>
+        <div className="text-sm font-semibold text-white">{sub}</div>
+      </div>
+      <div className="pt-5 pb-1"><Cup bad={bad} big={big} finance={finance} /></div>
+      <div className="px-4 pb-4">
+        <div className="divide-y divide-stone-200 border-y border-stone-200">
+          {items.map((it, i) => (
+            <div key={i} className="py-2.5 flex items-start gap-2.5">
+              <i className={"fa-solid mt-0.5 " + (it.ok ? "fa-check text-amber-700" : "fa-xmark text-red-700")} aria-hidden="true" />
+              <span className={"text-sm leading-snug " + (it.ok ? "text-stone-800" : "text-red-700 font-semibold")}>{it.n}</span>
+              {it.flag && <span className="ml-auto text-xs uppercase tracking-widest text-amber-700 shrink-0">yaad</span>}
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-sm italic text-stone-600 leading-snug">“{says}”</p>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================ app */
+
+function App() {
+  const [screen, setScreen] = useState("intro");
+  const [ri, setRi] = useState(0);
+  const [step, setStep] = useState("say");
+  const [guess, setGuess] = useState(null);
+  const [right, setRight] = useState(0);
+  const [diary, setDiary] = useState([]);
+  const [open, setOpen] = useState(false);
+  const reduced = useRef(typeof window !== "undefined" && window.matchMedia
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches).current;
+
+  const fin = screen === "finance";
+  const r = fin ? FINANCE : ROUNDS[ri];
+
+  const start = () => { setScreen("play"); setRi(0); setStep("say"); setGuess(null); setRight(0); setDiary([]); };
+
+  const said = () => { setStep("rush"); };
+  const rushDone = () => setTimeout(() => setStep("guess"), 400);
+  const doGuess = (g) => {
+    setGuess(g);
+    if (g === true) setRight((x) => x + 1);
+    setTimeout(() => setStep("serve"), 600);
+  };
+  const serve = () => {
+    setDiary((d) => [...d, { kind: fin ? "Paisa — shart aur goal" : r.kind, note: r.note }]);
+    setStep("why");
+  };
+  const next = () => {
+    if (fin) { setScreen("end"); return; }
+    if (ri + 1 >= ROUNDS.length) { setScreen("finance"); setStep("say"); setGuess(null); return; }
+    setRi(ri + 1); setStep("say"); setGuess(null);
+  };
+
+  useEffect(() => {
+    const h = (e) => {
+      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Enter") {
+        if (screen === "intro") start();
+        else if (step === "say") said();
+        else if (step === "serve") serve();
+        else if (step === "why") next();
+      }
+    };
+    window.addEventListener("keydown", h);
+    return () => window.removeEventListener("keydown", h);
+  });
+
+  /* ---------------------------------------------------- intro */
+  if (screen === "intro") {
+    return (
+      <div className="min-h-screen bg-amber-50 text-stone-900 font-display">
+        <div className="max-w-3xl mx-auto px-6 py-16 md:py-24">
+          <div className="flex items-center gap-2">
+            <i className="fa-solid fa-mug-hot text-amber-700" aria-hidden="true" />
+            <Label className="text-stone-500">Ek chai ki dukaan, aur do dukaandaar</Label>
+          </div>
+          <h1 className="text-5xl md:text-7xl font-bold tracking-tight mt-5 leading-[1.02] text-balance">
+            Ramu ki chai tapri
+          </h1>
+          <p className="mt-6 text-lg text-stone-700 leading-relaxed max-w-prose" style={{ textWrap: "pretty" }}>
+            Aap roz subah chai peene aate ho. Ramu bhaiya aapko jaante hain. Problem sirf itni hai ki
+            aapke baad <span className="font-semibold text-stone-900">200 aur log</span> aate hain, aur
+            sabki apni farmaish hai.
+          </p>
+          <p className="mt-4 text-lg text-stone-700 leading-relaxed max-w-prose" style={{ textWrap: "pretty" }}>
+            Is tapri pe do Ramu khade hain. Dono aapki baat sunte hain. Ek bhool jaata hai,
+            doosra diary rakhta hai. Aapko kuch seekhna nahi — bas dekhna hai ki cup mein kya aaya.
+          </p>
+
+          <div className="mt-12 grid sm:grid-cols-2 gap-px bg-stone-300 border border-stone-300">
+            <div className="bg-white p-6">
+              <div className="flex items-center gap-2"><i className="fa-solid fa-user text-stone-500" aria-hidden="true" />
+                <Label className="text-stone-500">Purana Ramu</Label></div>
+              <p className="mt-3 text-sm text-stone-700 leading-relaxed">
+                Sab kuch ek dher mein daal deta hai. Jo baat zyada baar suni, wahi uske liye sach hai.
+                Aajkal ke zyadatar AI assistant aise hi chalte hain.
+              </p>
+            </div>
+            <div className="bg-white p-6">
+              <div className="flex items-center gap-2"><i className="fa-solid fa-book text-amber-700" aria-hidden="true" />
+                <Label className="text-amber-700">Diary wala Ramu</Label></div>
+              <p className="mt-3 text-sm text-stone-700 leading-relaxed">
+                Zaroori baatein alag panne pe likhta hai, wajah ke saath. Purani baat kaatta hai,
+                mitata nahi. Isi tarike ka naam TAMS hai.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-10 border-l-2 border-amber-700 pl-5">
+            <p className="text-stone-700 leading-relaxed">
+              Saat baar order hoga. Har baar aapko ek andaza lagana hai ki purana Ramu phasega ya nahi.
+              Aakhri order chai ka nahi hai.
+            </p>
+          </div>
+
+          <button onClick={start}
+            className="mt-10 bg-stone-900 text-amber-50 px-7 py-4 text-base font-semibold rounded-sm hover:bg-stone-800 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700">
+            Tapri pe chalo
+          </button>
+          <div className="mt-3 text-xs text-stone-500">Enter dabake bhi chal sakta hai</div>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------------------------------------------- end */
+  if (screen === "end") {
+    return (
+      <div className="min-h-screen bg-amber-50 text-stone-900 font-display">
+        <div className="max-w-3xl mx-auto px-6 py-16 md:py-24">
+          <Label className="text-amber-700">Dukaan band</Label>
+          <h1 className="text-5xl md:text-6xl font-bold tracking-tight mt-4 leading-tight text-balance">
+            Aapne {right} baar pehle hi bhaanp liya.
+          </h1>
+          <p className="mt-6 text-lg text-stone-700 leading-relaxed max-w-prose" style={{ textWrap: "pretty" }}>
+            Saat mein se saat baar purana Ramu phasa. Har baar wajah alag thi, par bimaari ek hi —
+            uske paas sab baatein ek hi dher mein padi thin, aur dher mein purani cheez neeche dab jaati hai.
+          </p>
+
+          <div className="mt-12">
+            <Label className="text-stone-500 mb-4">Diary wale Ramu ke saat panne</Label>
+            <div className="border-y border-stone-300 divide-y divide-stone-300 bg-white">
+              {diary.map((d, i) => (
+                <div key={i} className="px-5 py-4 sm:flex sm:items-baseline sm:gap-6">
+                  <div className="text-xs uppercase tracking-widest text-amber-700 sm:w-48 shrink-0">{d.kind}</div>
+                  <div className="text-sm text-stone-800 mt-1 sm:mt-0 leading-snug">{d.note}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-12 bg-stone-900 text-amber-50 p-7 rounded-sm">
+            <Label className="text-amber-300">Asli baat</Label>
+            <h2 className="text-2xl font-bold tracking-tight mt-3">Ye diary hi TAMS hai.</h2>
+            <p className="mt-4 text-stone-200 leading-relaxed" style={{ textWrap: "pretty" }}>
+              Teen hisse hain. Jo abhi-abhi bola gaya wo jyon ka tyon rakha jaata hai, chhota kiye bina.
+              Poori baatcheet alag se sambhal ke rakhi jaati hai, taaki asli shabd kabhi na kho jaayein.
+              Aur sabse upar yahi diary — shartein, numbers, naam, faisle — alag panno pe, naam se
+              dhoondhne layak, wajah ke saath.
+            </p>
+            <p className="mt-4 text-stone-200 leading-relaxed" style={{ textWrap: "pretty" }}>
+              Jab panna milta hai to Ramu dher mein dhoondhta nahi — seedha kholta hai. Isiliye
+              bheed badhne se diary kamzor nahi hoti. Aur purani baat kabhi mitayi nahi jaati, sirf
+              kaati jaati hai — taaki ye bhi pata rahe ki kab aur kya badla tha.
+            </p>
+          </div>
+
+          <button onClick={start}
+            className="mt-10 bg-stone-900 text-amber-50 px-7 py-4 text-base font-semibold rounded-sm hover:bg-stone-800 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700">
+            Dobara khelo
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* ---------------------------------------------------- play */
+  const n = fin ? 7 : ri + 1;
+  return (
+    <div className="min-h-screen bg-amber-50 text-stone-900 font-display">
+      <header className="border-b border-stone-300 bg-amber-50 sticky top-0 z-20">
+        <div className="max-w-5xl mx-auto px-5 py-3 flex items-center gap-4">
+          <div className="flex items-center gap-2 mr-auto">
+            <i className={"fa-solid " + (fin ? "fa-indian-rupee-sign" : "fa-mug-hot") + " text-amber-700"} aria-hidden="true" />
+            <span className="font-bold tracking-tight">{fin ? "Wahi kahani, alag dukaan" : "Ramu ki chai tapri"}</span>
+          </div>
+          <div className="flex gap-1" aria-label={"Order " + n + " of 7"}>
+            {Array.from({ length: 7 }).map((_, i) => (
+              <span key={i} className={"w-6 h-1.5 rounded-sm " + (i < n - 1 ? "bg-amber-700" : i === n - 1 ? "bg-stone-900" : "bg-stone-300")} />
+            ))}
+          </div>
+          <button onClick={() => setOpen(true)} disabled={!diary.length}
+            className="text-xs uppercase tracking-widest text-amber-700 disabled:text-stone-400 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-700">
+            Diary ({diary.length})
+          </button>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-5 py-10 grid lg:grid-cols-12 gap-10">
+        {/* left: the conversation */}
+        <div className="lg:col-span-5">
+          <Label className="text-stone-500">{r.day}</Label>
+          <h1 className="text-3xl md:text-4xl font-bold tracking-tight mt-2 leading-tight text-balance">
+            {fin ? "Ab chai ki jagah paisa" : r.kind}
+          </h1>
+
+          <div className="mt-7 border-l-2 border-stone-900 pl-5 py-1">
+            <Label className="text-stone-500">Aap bolte ho</Label>
+            <p className="mt-2 text-xl leading-snug">“{r.say}”</p>
+          </div>
+
+          {step !== "say" && (
+            <div className="mt-6 border-l-2 border-amber-700 pl-5 py-1">
+              <Label className="text-amber-700">{fin ? "200 messages baad" : "200 customers baad, aap bolte ho"}</Label>
+              <p className="mt-2 text-xl leading-snug">“{r.ask}”</p>
+            </div>
+          )}
+
+          {step === "say" && (
+            <button onClick={said}
+              className="mt-8 w-full sm:w-auto bg-stone-900 text-amber-50 px-6 py-3.5 text-sm font-semibold rounded-sm hover:bg-stone-800 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700">
+              Bol diya — ab din beetne do
+            </button>
+          )}
+
+          {step === "guess" && (
+            <div className="mt-8 border border-stone-300 bg-white p-5 rounded-sm">
+              <Label className="text-stone-500">Ek andaza lagao</Label>
+              <p className="mt-2 text-lg leading-snug">{r.guessQ || FINANCE.guessQ}</p>
+              <div className="mt-4 inline-flex border border-stone-900 divide-x divide-stone-900 rounded-sm overflow-hidden">
+                <button onClick={() => doGuess(true)}
+                  className={"px-6 py-2.5 text-sm font-semibold transition-colors " + (guess === true ? "bg-stone-900 text-amber-50" : "bg-white hover:bg-stone-100")}>
+                  Haan, phasega
+                </button>
+                <button onClick={() => doGuess(false)}
+                  className={"px-6 py-2.5 text-sm font-semibold transition-colors " + (guess === false ? "bg-stone-900 text-amber-50" : "bg-white hover:bg-stone-100")}>
+                  Nahi, yaad rahega
+                </button>
+              </div>
+            </div>
+          )}
+
+          {(step === "serve" || step === "why") && (
+            <div className="mt-8 border border-stone-300 bg-white p-5 rounded-sm">
+              <Label className={guess ? "text-amber-700" : "text-red-700"}>
+                {guess ? "Aapka andaza sahi tha" : "Aapka andaza galat tha"}
+              </Label>
+              <p className="mt-2 text-sm text-stone-700 leading-relaxed">
+                {guess ? "Haan — wo phasa. Dekhiye kaise." : "Wo phas gaya. Dekhiye kaise."}
+              </p>
+            </div>
+          )}
+
+          {step === "why" && (
+            <div className="mt-6 space-y-5">
+              <div className="border-l-2 border-red-700 pl-5">
+                <Label className="text-red-700">Nuksaan</Label>
+                <p className="mt-1.5 text-lg font-semibold leading-snug">{r.cost}</p>
+              </div>
+              <div>
+                <Label className="text-stone-500">Hua kya</Label>
+                <p className="mt-2 text-stone-700 leading-relaxed" style={{ textWrap: "pretty" }}>{r.why}</p>
+              </div>
+              <div className="border border-amber-700 bg-white p-5 rounded-sm">
+                <div className="flex items-center gap-2">
+                  <i className="fa-solid fa-book text-amber-700" aria-hidden="true" />
+                  <Label className="text-amber-700">Diary mein naya panna</Label>
+                </div>
+                <p className="mt-3 text-sm text-stone-900 leading-relaxed">{r.note}</p>
+              </div>
+              <button onClick={next}
+                className="w-full sm:w-auto bg-stone-900 text-amber-50 px-6 py-3.5 text-sm font-semibold rounded-sm hover:bg-stone-800 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-700">
+                {fin ? "Dukaan band karo" : ri + 1 >= ROUNDS.length ? "Aakhri order — ye chai ka nahi hai" : "Agla din"}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* right: the counter */}
+        <div className="lg:col-span-7">
+          {step === "say" && (
+            <div className="border border-dashed border-stone-300 bg-white h-full min-h-60 flex items-center justify-center p-10">
+              <div className="text-center max-w-xs">
+                <i className="fa-solid fa-mug-hot text-4xl text-stone-300" aria-hidden="true" />
+                <p className="mt-4 text-sm text-stone-500 leading-relaxed">
+                  Dono Ramu ne sun liya. Dono ne sir hilaya. Ab dekhte hain kaun yaad rakhta hai.
+                </p>
+              </div>
+            </div>
+          )}
+
+          {step === "rush" && <Crowd running done={false} onDone={rushDone} reduced={reduced} />}
+          {step === "guess" && <Crowd running done onDone={() => {}} reduced />}
+
+          {(step === "serve" || step === "why") && (
+            <div>
+              <div className="flex items-baseline justify-between border-b border-stone-300 pb-2 mb-5">
+                <Label className="text-stone-500">{fin ? "Do salah" : "Do cup"}</Label>
+                <Label className="text-stone-400">same order, same din</Label>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-5">
+                <CupPanel title="Purana Ramu" sub={fin ? "Normal bot" : "Sab ek dher mein"} bad
+                  items={r.old} says={r.oldSays} big={ri === 4 && !fin} finance={fin} />
+                <CupPanel title="Diary wala Ramu" sub="TAMS" items={r.tams} says={r.tamsSays}
+                  big={ri === 4 && !fin} finance={fin} />
+              </div>
+              {step === "serve" && (
+                <button onClick={serve}
+                  className="mt-6 w-full bg-amber-700 text-amber-50 px-6 py-3.5 text-sm font-semibold rounded-sm hover:bg-amber-800 transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-stone-900">
+                  Ramu se poochho — aapko kaise yaad raha?
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </main>
+
+      {/* diary drawer */}
+      {open && (
+        <div className="fixed inset-0 z-40 bg-stone-900 bg-opacity-50 flex justify-end" onClick={() => setOpen(false)}>
+          <div className="bg-amber-50 w-full max-w-md h-full overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+            <div className="px-6 py-5 border-b border-stone-300 flex items-center justify-between sticky top-0 bg-amber-50">
+              <div className="flex items-center gap-2">
+                <i className="fa-solid fa-book text-amber-700" aria-hidden="true" />
+                <span className="font-bold tracking-tight">Ramu ki diary</span>
+              </div>
+              <button onClick={() => setOpen(false)} aria-label="Band karo"
+                className="text-stone-500 hover:text-stone-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-amber-700">
+                <i className="fa-solid fa-xmark text-lg" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="divide-y divide-stone-300 border-b border-stone-300">
+              {diary.map((d, i) => (
+                <div key={i} className="px-6 py-4">
+                  <Label className="text-amber-700">{d.kind}</Label>
+                  <p className="mt-2 text-sm text-stone-800 leading-relaxed">{d.note}</p>
+                </div>
+              ))}
+            </div>
+            <p className="px-6 py-5 text-xs text-stone-500 leading-relaxed">
+              Har panne pe naam, wajah aur tareekh hai. Purani baatein kaati hui hain, mitayi nahi.
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.render(<App />, document.getElementById('root'));
+</script>
+</body>
+</html>
